@@ -1,33 +1,38 @@
 import express from "express";
 import cors from "cors";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import Anthropic from "@anthropic-ai/sdk";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3001;
+const FIGMA_MCP_TOKEN = process.env.FIGMA_MCP_TOKEN;
 
-const SYSTEM_PROMPT = `You are a Figma landing page designer. You have access to Figma via MCP tools.
+const client = new Anthropic();
 
-When given a prompt describing a landing page, you MUST:
+const SYSTEM_PROMPT = `You are a Figma landing page designer. You generate Figma Plugin API JavaScript code to create landing pages.
 
-1. First call create_new_file to create a new Figma design file. Use planKey from the user's message.
-2. Then use the use_figma tool to execute Figma Plugin API JavaScript code that creates the landing page.
+When given a prompt, generate a SINGLE complete JavaScript code block that creates a full landing page in Figma.
 
 DESIGN RULES:
-- Create a top-level frame sized 1440x900 (desktop).
-- Use auto-layout extensively.
-- Load fonts before using them: await figma.loadFontAsync({ family: "Inter", style: "Regular" }) etc.
-- Set fills using RGB 0-1 range.
-- For text: create with figma.createText(), set fontName BEFORE characters.
-- Structure: Header/Nav, Hero section, Features/Benefits, Social proof or CTA, Footer.
+- Create a top-level frame sized 1440 wide, height auto (use HUG).
+- Use auto-layout extensively for responsive structure.
+- Load ALL fonts before using them: await figma.loadFontAsync({ family: "Inter", style: "Regular" }) etc.
+- Set fills using RGB 0-1 range (not 0-255).
+- For text: create with figma.createText(), set fontName BEFORE setting characters.
+- Fills/strokes are read-only arrays — clone, modify, reassign.
+- Set layoutSizingHorizontal/Vertical = 'FILL' AFTER parent.appendChild(child).
+- Structure the page with: Header/Nav, Hero section, Features/Benefits, CTA section, Footer.
 - Use consistent spacing (16, 24, 32, 48, 64, 80 px).
-- Make the design modern, clean, and professional.
-- After creating all elements, call: figma.currentPage.appendChild(frame); figma.viewport.scrollAndZoomIntoView([frame]);
-- Return created node IDs.
+- Make the design modern, clean, and professional with realistic content.
+- End with: figma.currentPage.appendChild(frame); figma.viewport.scrollAndZoomIntoView([frame]);
+- Return all created node IDs.
+- Use top-level await (code is auto-wrapped in async context).
+- Do NOT use figma.notify() or console.log() for output — use return.
+- Do NOT wrap code in an async IIFE.
 
-IMPORTANT: Always pass skillNames: "figma-use" when calling use_figma.`;
+Output ONLY the JavaScript code. No markdown fences, no explanation.`;
 
 // Health check
 app.get("/health", (req, res) => {
@@ -42,59 +47,74 @@ app.post("/generate", async (req, res) => {
     return res.status(400).json({ error: "Prompt is required" });
   }
 
-  if (!plan_key) {
-    return res.status(400).json({ error: "plan_key is required" });
-  }
-
   console.log(`[generate] Received prompt: "${prompt.slice(0, 100)}..."`);
 
   try {
-    let result = null;
-    let figmaFileUrl = null;
+    // Step 1: Generate the Figma Plugin API code using Claude
+    console.log("[generate] Calling Claude API to generate design code...");
 
-    const userMessage = `Create a Figma landing page with this description:
-
-${prompt}
-
-Use planKey: "${plan_key}" when creating the new file.
-Name the file based on what the user is describing.`;
-
-    for await (const message of query({
-      prompt: userMessage,
-      options: {
-        systemPrompt: SYSTEM_PROMPT,
-        model: "claude-sonnet-4-6",
-        maxTurns: 15,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        allowedTools: [],
-        mcpServers: {
-          figma: {
-            type: "http",
-            url: "https://mcp.figma.com/mcp",
-          },
+    const stream = client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 64000,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Create a Figma landing page with this description:\n\n${prompt}`,
         },
-      },
-    })) {
-      if ("result" in message) {
-        result = message.result;
-        console.log(`[generate] Agent completed. Result length: ${result?.length || 0}`);
-      }
+      ],
+    });
 
-      // Look for figma file URLs in any message content
-      if (message.type === "assistant") {
-        const text = JSON.stringify(message);
-        const urlMatch = text.match(/https:\/\/www\.figma\.com\/design\/[^\s"]+/);
-        if (urlMatch) {
-          figmaFileUrl = urlMatch[0];
+    const response = await stream.finalMessage();
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    const generatedCode = textBlock?.text;
+
+    if (!generatedCode) {
+      return res.status(500).json({ error: "No design code generated" });
+    }
+
+    console.log(`[generate] Code generated (${generatedCode.length} chars)`);
+
+    // Step 2: Create a new Figma file via MCP
+    let fileKey = null;
+    let fileUrl = null;
+
+    if (FIGMA_MCP_TOKEN) {
+      try {
+        console.log("[generate] Creating Figma file via REST API...");
+
+        // Create file using Figma REST API
+        const createResponse = await fetch("https://api.figma.com/v1/files", {
+          method: "POST",
+          headers: {
+            "X-Figma-Token": FIGMA_MCP_TOKEN,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: `Landing Page - ${prompt.slice(0, 50)}`,
+          }),
+        });
+
+        if (createResponse.ok) {
+          const fileData = await createResponse.json();
+          fileKey = fileData.key;
+          fileUrl = `https://www.figma.com/design/${fileKey}`;
+          console.log(`[generate] File created: ${fileUrl}`);
+        } else {
+          console.log(`[generate] Could not create file: ${createResponse.status}`);
         }
+      } catch (err) {
+        console.log(`[generate] File creation error: ${err.message}`);
       }
     }
 
     res.json({
       success: true,
-      result,
-      figma_file_url: figmaFileUrl,
+      generated_code: generatedCode,
+      figma_file_url: fileUrl,
+      figma_file_key: fileKey,
+      message: "Landing page design generated successfully. The Plugin API code is ready for execution in Figma.",
     });
   } catch (error) {
     console.error("[generate] Error:", error);
