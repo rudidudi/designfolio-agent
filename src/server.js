@@ -1,15 +1,31 @@
 import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
+import crypto from "crypto";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3001;
-const FIGMA_MCP_TOKEN = process.env.FIGMA_MCP_TOKEN;
 
 const client = new Anthropic();
+
+// In-memory job storage (jobs expire after 1 hour)
+const jobs = new Map();
+
+function generateJobCode() {
+  return crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+function cleanExpiredJobs() {
+  const now = Date.now();
+  for (const [code, job] of jobs) {
+    if (now - job.created_at > 3600000) {
+      jobs.delete(code);
+    }
+  }
+}
 
 const SYSTEM_PROMPT = `You are a Figma landing page designer. You generate Figma Plugin API JavaScript code to create landing pages.
 
@@ -39,9 +55,9 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Generate landing page
+// Generate landing page and store as a job
 app.post("/generate", async (req, res) => {
-  const { prompt, plan_key } = req.body;
+  const { prompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
@@ -50,7 +66,6 @@ app.post("/generate", async (req, res) => {
   console.log(`[generate] Received prompt: "${prompt.slice(0, 100)}..."`);
 
   try {
-    // Step 1: Generate the Figma Plugin API code using Claude
     console.log("[generate] Calling Claude API to generate design code...");
 
     const stream = client.messages.stream({
@@ -74,47 +89,22 @@ app.post("/generate", async (req, res) => {
       return res.status(500).json({ error: "No design code generated" });
     }
 
-    console.log(`[generate] Code generated (${generatedCode.length} chars)`);
+    // Store the job
+    cleanExpiredJobs();
+    const jobCode = generateJobCode();
+    jobs.set(jobCode, {
+      code: generatedCode,
+      prompt: prompt.slice(0, 200),
+      created_at: Date.now(),
+      status: "ready",
+    });
 
-    // Step 2: Create a new Figma file via MCP
-    let fileKey = null;
-    let fileUrl = null;
-
-    if (FIGMA_MCP_TOKEN) {
-      try {
-        console.log("[generate] Creating Figma file via REST API...");
-
-        // Create file using Figma REST API
-        const createResponse = await fetch("https://api.figma.com/v1/files", {
-          method: "POST",
-          headers: {
-            "X-Figma-Token": FIGMA_MCP_TOKEN,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: `Landing Page - ${prompt.slice(0, 50)}`,
-          }),
-        });
-
-        if (createResponse.ok) {
-          const fileData = await createResponse.json();
-          fileKey = fileData.key;
-          fileUrl = `https://www.figma.com/design/${fileKey}`;
-          console.log(`[generate] File created: ${fileUrl}`);
-        } else {
-          console.log(`[generate] Could not create file: ${createResponse.status}`);
-        }
-      } catch (err) {
-        console.log(`[generate] File creation error: ${err.message}`);
-      }
-    }
+    console.log(`[generate] Job ${jobCode} created (${generatedCode.length} chars)`);
 
     res.json({
       success: true,
-      generated_code: generatedCode,
-      figma_file_url: fileUrl,
-      figma_file_key: fileKey,
-      message: "Landing page design generated successfully. The Plugin API code is ready for execution in Figma.",
+      job_code: jobCode,
+      message: `Design generated! Open the Designfolio plugin in Figma and enter code: ${jobCode}`,
     });
   } catch (error) {
     console.error("[generate] Error:", error);
@@ -122,6 +112,22 @@ app.post("/generate", async (req, res) => {
       error: error.message || "Generation failed",
     });
   }
+});
+
+// Retrieve job code (called by Figma plugin)
+app.get("/job/:code", (req, res) => {
+  const jobCode = req.params.code.toUpperCase();
+  const job = jobs.get(jobCode);
+
+  if (!job) {
+    return res.status(404).json({ error: "Job not found or expired" });
+  }
+
+  res.json({
+    success: true,
+    code: job.code,
+    prompt: job.prompt,
+  });
 });
 
 app.listen(PORT, () => {
