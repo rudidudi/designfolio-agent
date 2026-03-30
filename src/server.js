@@ -57,18 +57,21 @@ app.get("/health", (req, res) => {
 
 // Generate landing page and store as a job
 app.post("/generate", async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, api_key } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
   }
 
-  console.log(`[generate] Received prompt: "${prompt.slice(0, 100)}..."`);
+  console.log(`[generate] Received prompt: "${prompt.slice(0, 100)}..." (user key: ${api_key ? "yes" : "no"})`);
 
   try {
+    // Use user's API key if provided, otherwise fall back to server key
+    const anthropic = api_key ? new Anthropic({ apiKey: api_key }) : client;
+
     console.log("[generate] Calling Claude API to generate design code...");
 
-    const stream = client.messages.stream({
+    const stream = anthropic.messages.stream({
       model: "claude-sonnet-4-6",
       max_tokens: 64000,
       system: SYSTEM_PROMPT,
