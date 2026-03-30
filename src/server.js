@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "crypto";
 
 const app = express();
@@ -30,9 +31,7 @@ function cleanExpiredJobs() {
 // Strip markdown fences and leading/trailing whitespace from generated code
 function cleanGeneratedCode(code) {
   let cleaned = code.trim();
-  // Remove opening fence: ```javascript, ```js, or just ```
   cleaned = cleaned.replace(/^```(?:javascript|js)?\s*\n?/, "");
-  // Remove closing fence
   cleaned = cleaned.replace(/\n?```\s*$/, "");
   return cleaned.trim();
 }
@@ -67,7 +66,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Generate landing page and store as a job
+// Generate landing page via Plugin mode (Anthropic SDK → Figma Plugin API code)
 app.post("/generate", async (req, res) => {
   const { prompt, api_key } = req.body;
 
@@ -78,7 +77,6 @@ app.post("/generate", async (req, res) => {
   console.log(`[generate] Received prompt: "${prompt.slice(0, 100)}..." (user key: ${api_key ? "yes" : "no"})`);
 
   try {
-    // Use user's API key if provided, otherwise fall back to server key
     const anthropic = api_key ? new Anthropic({ apiKey: api_key }) : client;
 
     console.log("[generate] Calling Claude API to generate design code...");
@@ -106,7 +104,6 @@ app.post("/generate", async (req, res) => {
 
     const cleanedCode = cleanGeneratedCode(generatedCode);
 
-    // Store the job
     cleanExpiredJobs();
     const jobCode = generateJobCode();
     jobs.set(jobCode, {
@@ -127,6 +124,97 @@ app.post("/generate", async (req, res) => {
     console.error("[generate] Error:", error);
     res.status(500).json({
       error: error.message || "Generation failed",
+    });
+  }
+});
+
+// Generate landing page via MCP mode (Agent SDK → Figma MCP → directly in Figma)
+app.post("/generate-mcp", async (req, res) => {
+  const { prompt, figma_access_token, api_key } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: "Prompt is required" });
+  }
+  if (!figma_access_token) {
+    return res.status(400).json({ error: "Figma access token is required for MCP generation" });
+  }
+
+  console.log(`[generate-mcp] Received prompt: "${prompt.slice(0, 100)}..." (user key: ${api_key ? "yes" : "no"})`);
+
+  try {
+    // Set API key for the Agent SDK (uses ANTHROPIC_API_KEY env var by default)
+    if (api_key) {
+      process.env.ANTHROPIC_API_KEY = api_key;
+    }
+
+    let result = null;
+    let error = null;
+
+    for await (const message of query({
+      prompt: `Create a complete, professional landing page in Figma with this description:\n\n${prompt}\n\nUse the Figma MCP tools to create the design. Create a new file called "Designfolio - Landing Page" and build a full landing page with: Header/Nav, Hero section, Features/Benefits section, CTA section, and Footer. Use modern design with clean typography, consistent spacing, and a professional color scheme. Make it 1440px wide.`,
+      options: {
+        mcpServers: {
+          figma: {
+            type: "http",
+            url: "https://mcp.figma.com/mcp",
+            headers: {
+              Authorization: `Bearer ${figma_access_token}`,
+            },
+          },
+        },
+        allowedTools: ["mcp__figma__*"],
+      },
+    })) {
+      // Log MCP connection status
+      if (message.type === "system" && message.subtype === "init") {
+        console.log("[generate-mcp] MCP servers:", JSON.stringify(message.mcp_servers));
+        const failed = (message.mcp_servers || []).filter((s) => s.status !== "connected");
+        if (failed.length > 0) {
+          console.error("[generate-mcp] Failed MCP connections:", failed);
+          error = `Failed to connect to Figma MCP: ${JSON.stringify(failed)}`;
+        }
+      }
+
+      // Log tool calls
+      if (message.type === "assistant" && message.message?.content) {
+        for (const block of message.message.content) {
+          if (block.type === "tool_use" && block.name?.startsWith("mcp__")) {
+            console.log(`[generate-mcp] Tool call: ${block.name}`);
+          }
+        }
+      }
+
+      // Capture final result
+      if (message.type === "result") {
+        if (message.subtype === "success") {
+          result = message.result;
+        } else {
+          error = message.result || "Agent execution failed";
+        }
+      }
+    }
+
+    // Restore server API key if we changed it
+    if (api_key) {
+      process.env.ANTHROPIC_API_KEY = process.env.SERVER_ANTHROPIC_API_KEY || "";
+    }
+
+    if (error) {
+      console.error("[generate-mcp] Error:", error);
+      return res.status(500).json({ error });
+    }
+
+    console.log("[generate-mcp] Design created successfully via MCP");
+
+    res.json({
+      success: true,
+      message: "Landing page created directly in your Figma account via MCP!",
+      result,
+    });
+  } catch (err) {
+    console.error("[generate-mcp] Error:", err);
+    res.status(500).json({
+      error: err.message || "MCP generation failed",
     });
   }
 });
