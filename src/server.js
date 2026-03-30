@@ -46,7 +46,7 @@ DESIGN RULES:
 - Use auto-layout extensively for responsive structure.
 - Load ALL fonts before using them: await figma.loadFontAsync({ family: "Inter", style: "Regular" }) etc.
 - Font style names MUST have spaces: "Semi Bold" (NOT "SemiBold"), "Extra Bold" (NOT "ExtraBold"), "Extra Light" (NOT "ExtraLight").
-- Set fills using RGB 0-1 range (not 0-255).
+- Set fills using RGB 0-1 range (not 0-255). NEVER include "a" (alpha) in the color object. For transparency, use "opacity" on the fill object instead: { type: "SOLID", color: { r: 1, g: 1, b: 1 }, opacity: 0.5 }.
 - For text: create with figma.createText(), set fontName BEFORE setting characters. NEVER create a bare figma.createText() without immediately setting fontName and characters on it.
 - Fills/strokes are read-only arrays — clone, modify, reassign.
 - Set layoutSizingHorizontal/Vertical = 'FILL' AFTER parent.appendChild(child).
