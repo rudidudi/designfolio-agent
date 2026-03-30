@@ -46,9 +46,10 @@ DESIGN RULES:
 - Use auto-layout extensively for responsive structure.
 - Load ALL fonts before using them: await figma.loadFontAsync({ family: "Inter", style: "Regular" }) etc.
 - Set fills using RGB 0-1 range (not 0-255).
-- For text: create with figma.createText(), set fontName BEFORE setting characters.
+- For text: create with figma.createText(), set fontName BEFORE setting characters. NEVER create a bare figma.createText() without immediately setting fontName and characters on it.
 - Fills/strokes are read-only arrays — clone, modify, reassign.
 - Set layoutSizingHorizontal/Vertical = 'FILL' AFTER parent.appendChild(child).
+- NEVER use figma.createText() as a spacer or placeholder — use a frame with fixed height instead.
 - Structure the page with: Header/Nav, Hero section, Features/Benefits, CTA section, Footer.
 - Use consistent spacing (16, 24, 32, 48, 64, 80 px).
 - Make the design modern, clean, and professional with realistic content.
