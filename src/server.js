@@ -27,6 +27,16 @@ function cleanExpiredJobs() {
   }
 }
 
+// Strip markdown fences and leading/trailing whitespace from generated code
+function cleanGeneratedCode(code) {
+  let cleaned = code.trim();
+  // Remove opening fence: ```javascript, ```js, or just ```
+  cleaned = cleaned.replace(/^```(?:javascript|js)?\s*\n?/, "");
+  // Remove closing fence
+  cleaned = cleaned.replace(/\n?```\s*$/, "");
+  return cleaned.trim();
+}
+
 const SYSTEM_PROMPT = `You are a Figma landing page designer. You generate Figma Plugin API JavaScript code to create landing pages.
 
 When given a prompt, generate a SINGLE complete JavaScript code block that creates a full landing page in Figma.
@@ -92,11 +102,13 @@ app.post("/generate", async (req, res) => {
       return res.status(500).json({ error: "No design code generated" });
     }
 
+    const cleanedCode = cleanGeneratedCode(generatedCode);
+
     // Store the job
     cleanExpiredJobs();
     const jobCode = generateJobCode();
     jobs.set(jobCode, {
-      code: generatedCode,
+      code: cleanedCode,
       prompt: prompt.slice(0, 200),
       created_at: Date.now(),
       status: "ready",
