@@ -15,6 +15,9 @@ const client = new Anthropic();
 // In-memory job storage (jobs expire after 1 hour)
 const jobs = new Map();
 
+// In-memory paired Figma MCP tokens (expire after 1 hour)
+const pairedTokens = new Map();
+
 function generateJobCode() {
   return crypto.randomBytes(3).toString("hex").toUpperCase();
 }
@@ -24,6 +27,11 @@ function cleanExpiredJobs() {
   for (const [code, job] of jobs) {
     if (now - job.created_at > 3600000) {
       jobs.delete(code);
+    }
+  }
+  for (const [code, token] of pairedTokens) {
+    if (now - token.created_at > 3600000) {
+      pairedTokens.delete(code);
     }
   }
 }
@@ -128,18 +136,72 @@ app.post("/generate", async (req, res) => {
   }
 });
 
+// Pair a Figma MCP token from Claude Code CLI
+app.post("/pair", (req, res) => {
+  const { access_token, refresh_token, expires_at, client_id, client_secret } = req.body;
+
+  if (!access_token) {
+    return res.status(400).json({ error: "access_token is required" });
+  }
+
+  cleanExpiredJobs(); // reuse cleanup cycle
+
+  const pairCode = generateJobCode();
+  pairedTokens.set(pairCode, {
+    access_token,
+    refresh_token,
+    expires_at,
+    client_id,
+    client_secret,
+    created_at: Date.now(),
+  });
+
+  console.log(`[pair] Token paired with code ${pairCode}`);
+
+  res.json({ success: true, pair_code: pairCode });
+});
+
+// Verify a pair code exists (called by frontend)
+app.get("/pair/:code", (req, res) => {
+  const code = req.params.code.toUpperCase();
+  const token = pairedTokens.get(code);
+
+  if (!token) {
+    return res.status(404).json({ error: "Pair code not found or expired" });
+  }
+
+  // Don't expose the actual token, just confirm it exists
+  res.json({
+    success: true,
+    has_refresh: !!token.refresh_token,
+    expires_at: token.expires_at,
+  });
+});
+
 // Generate landing page via MCP mode (Agent SDK → Figma MCP → directly in Figma)
 app.post("/generate-mcp", async (req, res) => {
-  const { prompt, figma_access_token, api_key } = req.body;
+  const { prompt, figma_access_token, pair_code, api_key } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
   }
-  if (!figma_access_token) {
-    return res.status(400).json({ error: "Figma access token is required for MCP generation" });
+
+  // Resolve the Figma token: either directly provided or via pair code
+  let figmaToken = figma_access_token;
+
+  if (!figmaToken && pair_code) {
+    const paired = pairedTokens.get(pair_code.toUpperCase());
+    if (!paired) {
+      return res.status(404).json({ error: "Pair code not found or expired. Run 'npx designfolio-connect' again." });
+    }
+    figmaToken = paired.access_token;
   }
 
-  console.log(`[generate-mcp] Received prompt: "${prompt.slice(0, 100)}..." (user key: ${api_key ? "yes" : "no"})`);
+  if (!figmaToken) {
+    return res.status(400).json({ error: "Figma access token or pair code is required for MCP generation" });
+  }
+
+  console.log(`[generate-mcp] Received prompt: "${prompt.slice(0, 100)}..." (user key: ${api_key ? "yes" : "no"}, pair: ${pair_code ? "yes" : "no"})`);
 
   try {
     // Set API key for the Agent SDK (uses ANTHROPIC_API_KEY env var by default)
@@ -158,7 +220,7 @@ app.post("/generate-mcp", async (req, res) => {
             type: "http",
             url: "https://mcp.figma.com/mcp",
             headers: {
-              Authorization: `Bearer ${figma_access_token}`,
+              Authorization: `Bearer ${figmaToken}`,
             },
           },
         },
