@@ -4,9 +4,19 @@ import Anthropic from "@anthropic-ai/sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "crypto";
 
+import {
+  assertOAuthConfigured,
+  getAuthorize,
+  postAuthorize,
+  postToken,
+} from "./oauth.js";
+import { handleMcpRequest, handleMcpGet } from "./mcp.js";
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+// OAuth /token and /authorize (POST) use application/x-www-form-urlencoded
+app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
 const PORT = process.env.PORT || 3001;
 
@@ -73,6 +83,28 @@ Output ONLY the JavaScript code. No markdown fences, no explanation.`;
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
+
+/* ── Figma Make custom MCP connector ─────────────────────────────────── */
+
+// OAuth 2.0 authorization-code flow. Figma Make pastes client_id/secret
+// from MCP_OAUTH_CLIENT_ID / MCP_OAUTH_CLIENT_SECRET env vars into its
+// "Advanced settings" when adding the connector.
+app.get("/oauth/authorize", getAuthorize);
+app.post("/oauth/authorize", postAuthorize);
+app.post("/oauth/token", postToken);
+
+// MCP Streamable HTTP endpoint. Bearer-authed via tokens issued by /oauth/token.
+app.post("/mcp", handleMcpRequest);
+app.get("/mcp", handleMcpGet);
+
+// Fail fast at boot if OAuth isn't configured — avoids silent 500s later.
+try {
+  assertOAuthConfigured();
+  console.log("[mcp] OAuth configured — connector ready at /mcp");
+} catch (err) {
+  console.warn(`[mcp] ${err.message}`);
+  console.warn("[mcp] /oauth/* and /mcp routes will return errors until env vars are set.");
+}
 
 // Generate landing page via Plugin mode (Anthropic SDK → Figma Plugin API code)
 app.post("/generate", async (req, res) => {
