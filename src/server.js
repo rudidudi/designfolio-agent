@@ -89,11 +89,31 @@ app.get("/health", (req, res) => {
 // OAuth 2.0 authorization-code flow. Figma Make pastes client_id/secret
 // from MCP_OAUTH_CLIENT_ID / MCP_OAUTH_CLIENT_SECRET env vars into its
 // "Advanced settings" when adding the connector.
+// Mount at BOTH /authorize (root) and /oauth/authorize — Figma Make calls
+// the root path, /oauth/* kept for future compatibility.
+app.get("/authorize", getAuthorize);
+app.post("/authorize", postAuthorize);
+app.post("/token", postToken);
 app.get("/oauth/authorize", getAuthorize);
 app.post("/oauth/authorize", postAuthorize);
 app.post("/oauth/token", postToken);
 
-// MCP Streamable HTTP endpoint. Bearer-authed via tokens issued by /oauth/token.
+// OAuth 2.0 Authorization Server Metadata (RFC 8414). Some MCP clients
+// discover endpoints via this document before hitting /authorize.
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    issuer: base,
+    authorization_endpoint: `${base}/authorize`,
+    token_endpoint: `${base}/token`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+    code_challenge_methods_supported: [],
+  });
+});
+
+// MCP Streamable HTTP endpoint. Bearer-authed via tokens issued by /token.
 app.post("/mcp", handleMcpRequest);
 app.get("/mcp", handleMcpGet);
 
