@@ -135,7 +135,16 @@ export async function handleMcpRequest(req, res) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
 
   if (!validateBearer(token)) {
-    res.setHeader("WWW-Authenticate", 'Bearer realm="mcp", error="invalid_token"');
+    // Point clients at the protected-resource metadata per MCP auth spec
+    // (2025-06-18 revision) so they can discover the authorization server.
+    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const scheme = /^(localhost|127\.|::1|\[::1\])/.test(host || "") ? proto : "https";
+    const metadataUrl = `${scheme}://${host}/.well-known/oauth-protected-resource`;
+    res.setHeader(
+      "WWW-Authenticate",
+      `Bearer realm="mcp", error="invalid_token", resource_metadata="${metadataUrl}"`,
+    );
     return res.status(401).json({ error: "invalid_token" });
   }
 

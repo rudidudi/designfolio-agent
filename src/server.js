@@ -13,6 +13,10 @@ import {
 import { handleMcpRequest, handleMcpGet } from "./mcp.js";
 
 const app = express();
+// Railway sits behind a TLS-terminating proxy. Trust the first hop so
+// req.protocol reflects X-Forwarded-Proto ("https"), which we echo back
+// in the OAuth metadata documents below.
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 // OAuth /token and /authorize (POST) use application/x-www-form-urlencoded
@@ -98,10 +102,31 @@ app.get("/oauth/authorize", getAuthorize);
 app.post("/oauth/authorize", postAuthorize);
 app.post("/oauth/token", postToken);
 
-// OAuth 2.0 Authorization Server Metadata (RFC 8414). Some MCP clients
-// discover endpoints via this document before hitting /authorize.
+// Build the canonical base URL, forcing https in production so we never
+// advertise http:// endpoints (which OAuth clients reject).
+function canonicalBase(req) {
+  const proto = req.get("x-forwarded-proto") || req.protocol;
+  const host = req.get("x-forwarded-host") || req.get("host");
+  // Any non-localhost host is served over https via Railway's proxy.
+  const scheme = /^(localhost|127\.|::1|\[::1\])/.test(host) ? proto : "https";
+  return `${scheme}://${host}`;
+}
+
+// RFC 9728 — Protected Resource Metadata. MCP clients following the
+// 2025-06-18 auth spec fetch this first (via the WWW-Authenticate header
+// on the 401 from /mcp) to find the authorization server.
+app.get("/.well-known/oauth-protected-resource", (req, res) => {
+  const base = canonicalBase(req);
+  res.json({
+    resource: `${base}/mcp`,
+    authorization_servers: [base],
+    bearer_methods_supported: ["header"],
+  });
+});
+
+// RFC 8414 — OAuth 2.0 Authorization Server Metadata.
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = canonicalBase(req);
   res.json({
     issuer: base,
     authorization_endpoint: `${base}/authorize`,
