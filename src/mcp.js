@@ -66,16 +66,24 @@ Always include sections in this order: nav, hero, features (3–6 items), social
 // --- Tool handler: design_landing_page -------------------------------------
 
 async function designLandingPage({ prompt }) {
+  // Figma Make's MCP client times out tool calls around ~30s. The spec
+  // itself rarely exceeds ~2.5k output tokens, so cap generous but tight
+  // and log timing so we can see where we stand on latency.
+  const t0 = Date.now();
+  console.log(`[mcp] design_landing_page: start (prompt=${prompt.slice(0, 60)}…)`);
+
   const message = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 8000,
+    max_tokens: 3000,
     system: DESIGN_SPEC_SYSTEM,
     messages: [{ role: "user", content: `Generate a landing page design spec for:\n\n${prompt}` }],
   });
 
+  const elapsed = Date.now() - t0;
   const textBlock = message.content.find((b) => b.type === "text");
   const raw = textBlock?.text ?? "";
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  console.log(`[mcp] design_landing_page: done in ${elapsed}ms, ${cleaned.length} chars, stop=${message.stop_reason}`);
 
   // Validate the model returned JSON — if not, fall back to raw text so
   // Figma Make at least sees the error.
