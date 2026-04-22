@@ -178,29 +178,41 @@ export function postToken(req, res) {
     return res.status(401).json({ error: "invalid_client" });
   }
 
-  if (body.grant_type !== "authorization_code") {
-    return res.status(400).json({ error: "unsupported_grant_type" });
+  // Two-legged flow: Figma Make server-to-server exchange. No user browser,
+  // no code. Creds already validated above, so we just issue a bearer.
+  if (body.grant_type === "client_credentials") {
+    const accessToken = crypto.randomBytes(32).toString("base64url");
+    accessTokens.set(accessToken, { issued_at: Date.now() });
+    return res.json({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: Math.floor(TOKEN_TTL_MS / 1000),
+    });
   }
 
-  const record = authCodes.get(body.code);
-  if (!record) {
-    return res.status(400).json({ error: "invalid_grant", error_description: "code not found or expired" });
+  // Three-legged flow: browser redirect through /authorize → code → here.
+  if (body.grant_type === "authorization_code") {
+    const record = authCodes.get(body.code);
+    if (!record) {
+      return res.status(400).json({ error: "invalid_grant", error_description: "code not found or expired" });
+    }
+    // Single-use codes
+    authCodes.delete(body.code);
+
+    if (body.redirect_uri && body.redirect_uri !== record.redirect_uri) {
+      return res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri mismatch" });
+    }
+
+    const accessToken = crypto.randomBytes(32).toString("base64url");
+    accessTokens.set(accessToken, { issued_at: Date.now() });
+    return res.json({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: Math.floor(TOKEN_TTL_MS / 1000),
+    });
   }
-  // Single-use codes
-  authCodes.delete(body.code);
 
-  if (body.redirect_uri && body.redirect_uri !== record.redirect_uri) {
-    return res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri mismatch" });
-  }
-
-  const accessToken = crypto.randomBytes(32).toString("base64url");
-  accessTokens.set(accessToken, { issued_at: Date.now() });
-
-  res.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: Math.floor(TOKEN_TTL_MS / 1000),
-  });
+  return res.status(400).json({ error: "unsupported_grant_type" });
 }
 
 /**
