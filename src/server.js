@@ -9,6 +9,7 @@ import {
   getAuthorize,
   postAuthorize,
   postToken,
+  postRegister,
 } from "./oauth.js";
 import { handleMcpRequest, handleMcpGet } from "./mcp.js";
 
@@ -98,9 +99,11 @@ app.get("/health", (req, res) => {
 app.get("/authorize", getAuthorize);
 app.post("/authorize", postAuthorize);
 app.post("/token", postToken);
+app.post("/register", postRegister);
 app.get("/oauth/authorize", getAuthorize);
 app.post("/oauth/authorize", postAuthorize);
 app.post("/oauth/token", postToken);
+app.post("/oauth/register", postRegister);
 
 // Build the canonical base URL, forcing https in production so we never
 // advertise http:// endpoints (which OAuth clients reject).
@@ -125,16 +128,20 @@ app.get("/.well-known/oauth-protected-resource", (req, res) => {
 });
 
 // RFC 8414 — OAuth 2.0 Authorization Server Metadata.
+// The MCP 2025-06-18 auth spec requires this plus a registration_endpoint
+// (RFC 7591 Dynamic Client Registration). Spec-compliant clients like
+// Figma Make refuse to proceed past discovery without it.
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   const base = canonicalBase(req);
   res.json({
     issuer: base,
     authorization_endpoint: `${base}/authorize`,
     token_endpoint: `${base}/token`,
+    registration_endpoint: `${base}/register`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "client_credentials"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
-    code_challenge_methods_supported: [],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+    code_challenge_methods_supported: ["S256"],
   });
 });
 

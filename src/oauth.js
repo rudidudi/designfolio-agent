@@ -225,6 +225,39 @@ export function validateBearer(token) {
   return accessTokens.has(token);
 }
 
+/**
+ * POST /register — RFC 7591 Dynamic Client Registration.
+ *
+ * The MCP 2025-06-18 auth spec requires the authorization server to
+ * advertise a registration_endpoint. Figma Make (and other spec-compliant
+ * clients) may refuse to proceed without it — even when the user has
+ * already pasted a client_id/secret into the connector UI.
+ *
+ * We don't actually issue per-client credentials here; we just accept
+ * the registration and hand back our single global client_id/secret.
+ * This satisfies the spec without maintaining a client registry.
+ */
+export function postRegister(req, res) {
+  assertOAuthConfigured();
+
+  const body = req.body || {};
+  const now = Math.floor(Date.now() / 1000);
+
+  res.status(201).json({
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    client_id_issued_at: now,
+    client_secret_expires_at: 0, // never expires
+    // Echo back what the client sent so they know we accepted it.
+    redirect_uris: body.redirect_uris || [FIGMA_CALLBACK],
+    grant_types: body.grant_types || ["authorization_code", "client_credentials"],
+    response_types: body.response_types || ["code"],
+    token_endpoint_auth_method: body.token_endpoint_auth_method || "client_secret_basic",
+    client_name: body.client_name || "Figma Make",
+    application_type: body.application_type || "web",
+  });
+}
+
 // --- Helpers ----------------------------------------------------------------
 
 function escapeHtml(s) {
